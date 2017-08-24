@@ -1,10 +1,13 @@
 package org.jetbrains.uast.kotlin
 
 import com.intellij.psi.PsiClass
-import com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.psi.KtAnnotationEntry
+import org.jetbrains.kotlin.psi.KtParameter
 import org.jetbrains.kotlin.resolve.BindingContext
+import org.jetbrains.kotlin.resolve.calls.callUtil.getResolvedCall
+import org.jetbrains.kotlin.resolve.calls.model.ResolvedCall
 import org.jetbrains.kotlin.resolve.descriptorUtil.annotationClass
+import org.jetbrains.kotlin.resolve.source.getPsi
 import org.jetbrains.uast.*
 
 class KotlinUAnnotation(
@@ -13,18 +16,22 @@ class KotlinUAnnotation(
 ) : UAnnotation {
     private val resolvedAnnotation by lz { psi.analyze()[BindingContext.ANNOTATION, psi] }
 
+    private val resolvedCall: ResolvedCall<*>? by lz { psi.getResolvedCall(psi.analyze()) }
+
     override val qualifiedName: String?
         get() = resolvedAnnotation?.fqName?.asString()
 
-    override val attributeValues by lz {
-        val context = getUastContext()
-        psi.valueArguments.map { arg ->
-            val name = arg.getArgumentName()?.asName?.asString() ?: ""
-            KotlinUNamedExpression(name, this).apply {
-                val value = arg.getArgumentExpression()?.let { context.convertElement(it, this) } as? UExpression
-                expression = value ?: UastEmptyExpression
+    override val attributeValues: List<UNamedExpression> by lz {
+        resolvedCall?.valueArguments?.entries?.mapNotNull {
+            val arguments = it.value.arguments
+            when {
+                arguments.size == 1 ->
+                    KotlinUNamedExpression.create(arguments.first(), this)
+                arguments.size > 1 ->
+                    KotlinUNamedExpression.create(null, arguments.mapNotNull { it.getArgumentExpression() }, this)
+                else -> null
             }
-        }
+        } ?: emptyList()
     }
 
     override fun resolve(): PsiClass? {
@@ -32,20 +39,16 @@ class KotlinUAnnotation(
         return descriptor.toSource()?.getMaybeLightElement(this) as? PsiClass
     }
 
-    //TODO
-    override fun findAttributeValue(name: String?) = findDeclaredAttributeValue(name)
+    override fun findAttributeValue(name: String?): UExpression? =
+            findDeclaredAttributeValue(name)
 
     override fun findDeclaredAttributeValue(name: String?): UExpression? {
-        return attributeValues.firstOrNull { it.name == (name ?: "value") }?.expression
+        return attributeValues.find {
+            it.name == name ||
+            (name == null && it.name == "value") ||
+            (name == "value" && it.name == null)
+        }?.expression
     }
+
 }
 
-class KotlinUNamedExpression(override val name: String, override val uastParent: UElement?) : UNamedExpression {
-    override lateinit var expression: UExpression
-
-    override val annotations: List<UAnnotation>
-        get() = emptyList()
-
-    override val psi: PsiElement?
-        get() = null
-}
